@@ -51,8 +51,12 @@ SickTim5512050001Parser::~SickTim5512050001Parser()
 int SickTim5512050001Parser::parse_datagram(char* datagram, size_t datagram_length, SickTim3xxConfig &config,
                                      sensor_msgs::LaserScan &msg)
 {
-  static const size_t NUM_FIELDS = 306;
-  char* fields[NUM_FIELDS];
+std::cout << datagram << std::endl;
+  static const size_t NUM_FIELDS_WITHOUT_INTENSITIES = 306;
+  static const size_t NUM_FIELDS_MAX = 583;
+  size_t num_fields;
+  
+  char* fields[NUM_FIELDS_MAX+1];
   char* cur_field;
   size_t count;
 
@@ -71,27 +75,22 @@ int SickTim5512050001Parser::parse_datagram(char* datagram, size_t datagram_leng
   {
     count++;
     cur_field = strtok(NULL, " ");
-    if (count <= NUM_FIELDS)
+    if (count <= NUM_FIELDS_MAX)
       fields[count] = cur_field;
 
     // ROS_DEBUG("%zu: %s ", count, cur_field);
   }
 
-  if (count < NUM_FIELDS)
+  if (count != NUM_FIELDS_WITHOUT_INTENSITIES && count != NUM_FIELDS_MAX)
   {
     ROS_WARN(
-        "received less fields than expected fields (actual: %zu, expected: %zu), ignoring scan", count, NUM_FIELDS);
-    ROS_WARN("are you using the correct node? (124 --> sick_tim310_1130000m01, 306 --> sick_tim551_2050001, 580 --> sick_tim310s01, 592 --> sick_tim310)");
+        "received unexpected number of fields (actual: %zu, expected either %zu with intensity values or %zu without), ignoring scan", count, NUM_FIELDS_WITHOUT_INTENSITIES, NUM_FIELDS_MAX);
+    ROS_WARN("are you using the correct node? (124 --> sick_tim310_1130000m01, 306/584 --> sick_tim551_2050001, 580 --> sick_tim310s01, 592 --> sick_tim310)");
     // ROS_DEBUG("received message was: %s", datagram_copy);
     return EXIT_FAILURE;
   }
-  else if (count > NUM_FIELDS)
-  {
-    ROS_WARN("received more fields than expected (actual: %zu, expected: %zu), ignoring scan", count, NUM_FIELDS);
-    ROS_WARN("are you using the correct node? (124 --> sick_tim310_1130000m01, 306 --> sick_tim551_2050001, 580 --> sick_tim310s01, 592 --> sick_tim310)");
-    // ROS_DEBUG("received message was: %s", datagram_copy);
-    return EXIT_FAILURE;
-  }
+
+  num_fields = count;
 
   // ----- read fields into msg
   msg.header.frame_id = config.frame_id;
@@ -139,7 +138,7 @@ int SickTim5512050001Parser::parse_datagram(char* datagram, size_t datagram_leng
 //      // ROS_DEBUG("hex: %s, scaling_factor_int: %d, scaling_factor: %f", fields[21], scaling_factor_int, scaling_factor);
 
   // 22: Scaling offset (00000000) -- always 0
-  // 23: Starting angle (FFF92230)
+  // 23: Starting angle (FFF92231)
   int starting_angle = -1;
   sscanf(fields[23], "%x", &starting_angle);
   msg.angle_min = (starting_angle / 10000.0) / 180.0 * M_PI - M_PI / 2;
@@ -181,8 +180,32 @@ int SickTim5512050001Parser::parse_datagram(char* datagram, size_t datagram_leng
     msg.ranges[j - index_min] = range / 1000.0;
   }
 
-  // 297-305: unknown
-  // <ETX> (\x03)
+  if (num_fields == NUM_FIELDS_MAX) { // if intensity values are available
+    // ignore most fields, as they are (should be) identical with those from distance values
+    // 297: Number of 8 bit channels (1)
+    // 298: Measured data contents (RSSI1)
+    // 299: Scaling factor (3F800000)
+    // 300: Scaling offset (00000000) -- always 0
+    // 301: Starting angle (FFF92231)
+    // 302: Angular step width (2710)
+    // 303: Number of data (10F)
+    // 304..574: Data_1 .. Data_n
+	index_min = index_min + 304 - 26;
+	index_max = index_max + 574 - 296;
+    msg.intensities.resize(index_max - index_min + 1);
+    for (int j = index_min; j <= index_max; ++j)
+    {
+      unsigned short intensity;
+      sscanf(fields[j + 26], "%hx", &intensity);
+      msg.intensities[j - index_min] = intensity;
+    }
+    // 575-583: unknown
+    // <ETX> (\x03)  
+
+  } else {
+    // 297-305: unknown
+    // <ETX> (\x03)
+  }
 
   msg.range_min = 0.05;
   msg.range_max = 10.0;
